@@ -14,25 +14,20 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.0.9"; 
+        public override string ModuleVersion => "1.0.8"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
-        // Used for checking physical entities (drops, pickups, map spawns)
-        private readonly HashSet<string> allowedWeapons = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        // Unified list for both the buy menu AND map drops
+        private readonly HashSet<string> allowedItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "taser", "flashbang", "hegrenade", "grenade", "smokegrenade", "smoke",
-            "molotov", "incgrenade", "firebomb", "decoy", "decoygrenade", "c4",
-            "kevlar", "assaultsuit", "defuser" 
-        };
+            // Raw item names
+            "taser", "flashbang", "hegrenade", "smokegrenade", "molotov", "incgrenade", 
+            "decoy", "smoke", "firebomb", "grenade", "c4", "kevlar", "assaultsuit", 
+            "defuser", "vest", "vesthelm", 
 
-        // NEW: Strictly for the buy menu interceptor. 
-        // We include the raw UI slot commands CS2 sends under the hood for utilities.
-        private readonly HashSet<string> allowedBuyCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "taser",
-            "flashbang", "hegrenade", "smokegrenade", "molotov", "incgrenade", "decoy", "smoke", "firebomb", "grenade",
-            "grenade0", "grenade1", "grenade2", "grenade3", "grenade4", // CS2 Loadout slots for grenades
-            "kevlar", "assaultsuit", "defuser", "vest", "vesthelm" // Include aliases for armor
+            // CS2 UI Loadout slot names (just in case)
+            "grenade0", "grenade1", "grenade2", "grenade3", "grenade4",
+            "equipment0", "equipment1", "equipment2", "equipment3", "equipment4"
         };
 
         public override void Load(bool hotReload)
@@ -42,7 +37,6 @@ namespace ZeusLockdown
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
             RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
             
-            // We use command listeners to block the transaction BEFORE money is touched
             AddCommandListener("buy", OnPlayerBuy);
             AddCommandListener("autobuy", OnPlayerAutoBuy);
             AddCommandListener("rebuy", OnPlayerReBuy);
@@ -56,35 +50,36 @@ namespace ZeusLockdown
             }, TimerFlags.REPEAT);
         }
 
-        private bool IsWeaponAllowed(string weaponName)
+        // --- UNIVERSAL CHECKER ---
+        private bool IsItemAllowed(string itemName)
         {
-            if (string.IsNullOrWhiteSpace(weaponName)) return false;
+            if (string.IsNullOrWhiteSpace(itemName)) return false;
 
-            string cleanName = weaponName
+            // Strip out quotes, weapon_, and item_ prefixes so "weapon_taser" becomes "taser"
+            string cleanName = itemName
                 .ToLowerInvariant()
                 .Replace("weapon_", "")
                 .Replace("item_", "")
+                .Replace("\"", "")
                 .Trim();
 
-            return allowedWeapons.Contains(cleanName) || 
+            return allowedItems.Contains(cleanName) || 
                    cleanName.StartsWith("knife", StringComparison.OrdinalIgnoreCase) || 
                    cleanName.Contains("bayonet", StringComparison.OrdinalIgnoreCase);
         }
 
-        // --- THE BULLETPROOF BUY BLOCKER ---
         private HookResult OnPlayerBuy(CCSPlayerController? player, CommandInfo info)
         {
             if (player == null || !player.IsValid) return HookResult.Continue;
 
-            // Grab what they are trying to buy (e.g., "rifle1", "taser", "grenade0")
-            string buyItem = info.GetArg(1).ToLowerInvariant().Trim();
-            if (string.IsNullOrWhiteSpace(buyItem)) return HookResult.Continue;
+            string rawBuyArg = info.GetArg(1);
+            if (string.IsNullOrWhiteSpace(rawBuyArg)) return HookResult.Continue;
 
-            // If the command is NOT explicitly in our safe list (meaning they clicked a pistol, rifle, etc.)
-            if (!allowedBuyCommands.Contains(buyItem))
+            // Run the raw argument through our universal checker
+            if (!IsItemAllowed(rawBuyArg))
             {
-                player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! Only Zeus and Utility are allowed.");
-                // HookResult.Stop halts the game engine here. No money is spent, no gun is spawned.
+                // We print the exact raw argument here so you can see what CS2 is doing under the hood!
+                player.PrintToChat($" \x02[Zeus Lockdown]\x01 Restricted! Only Zeus/Utility allowed. (Debug: {rawBuyArg})");
                 return HookResult.Stop; 
             }
 
@@ -105,7 +100,6 @@ namespace ZeusLockdown
             return HookResult.Stop; 
         }
 
-        // --- HANDLES MAP DROPS ---
         private void OnEntitySpawned(CEntityInstance entity)
         {
             if (entity == null || !entity.IsValid) return;
@@ -115,13 +109,12 @@ namespace ZeusLockdown
 
             if (name.StartsWith("weapon_") || name.StartsWith("item_"))
             {
-                if (!IsWeaponAllowed(name))
+                if (!IsItemAllowed(name))
                 {
                     Server.NextFrame(() =>
                     {
                         if (entity != null && entity.IsValid)
                         {
-                            // Safely cast to CBaseEntity so the compiler knows what OwnerEntity is
                             var baseEntity = entity as CBaseEntity;
                             if (baseEntity != null)
                             {
@@ -241,7 +234,7 @@ namespace ZeusLockdown
 
         private HookResult OnItemPickup(EventItemPickup ev, GameEventInfo info)
         {
-            if (!IsWeaponAllowed(ev.Item))
+            if (!IsItemAllowed(ev.Item))
             {
                 var player = ev.Userid;
                 if (player != null && player.IsValid)
@@ -263,7 +256,7 @@ namespace ZeusLockdown
 
                 if (weapEnt != null && weapEnt.IsValid)
                 {
-                    if (!IsWeaponAllowed(weapEnt.DesignerName))
+                    if (!IsItemAllowed(weapEnt.DesignerName))
                     {
                         weapEnt.Remove();
                     }
