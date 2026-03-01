@@ -7,14 +7,16 @@ using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 
 namespace ZeusLockdown
 {
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.1.6"; 
+        public override string ModuleVersion => "1.1.4"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
         // Clean, simple list for allowed items
@@ -25,39 +27,14 @@ namespace ZeusLockdown
             "defuser", "vest", "vesthelm"
         };
 
-        // --- THE WEAPON RESTRICT METHOD ---
-        // Hardcoded dictionary of standard CS2 economy prices for illegal items
-        private readonly Dictionary<string, int> WeaponPrices = new(StringComparer.OrdinalIgnoreCase)
-        {
-            // Pistols
-            {"glock", 200}, {"usp_silencer", 200}, {"hkp2000", 200}, {"elite", 300}, 
-            {"p250", 300}, {"tec9", 500}, {"cz75a", 500}, {"fiveseven", 500}, 
-            {"deagle", 700}, {"revolver", 600},
-
-            // SMGs
-            {"mac10", 1050}, {"mp9", 1250}, {"mp7", 1400}, {"mp5sd", 1500}, 
-            {"ump45", 1200}, {"p90", 2350}, {"bizon", 1300},
-
-            // Rifles
-            {"galilar", 1800}, 
-            {"famas", 1950},           // Dropped from $2050 to $1950 in Jan 2025
-            {"ak47", 2700}, 
-            {"m4a1", 2900},            // M4A4 dropped from $3100 to $2900 in Jan 2025
-            {"m4a1_silencer", 2900},   // M4A1-S remains $2900
-            {"aug", 3300}, 
-            {"sg556", 3000}, 
-            {"ssg08", 1700}, 
-            {"awp", 4750},             // Fixed: Was listed as $4700 previously
-            {"g3sg1", 5000}, 
-            {"scar20", 5000},
-
-            // Heavy
-            {"nova", 1050}, {"xm1014", 2000}, {"mag7", 1300}, {"sawedoff", 1100}, 
-            {"m249", 5200}, {"negev", 1700}
-        };
+        // Replaced hardcoded dictionary with an empty one that will be populated from JSON
+        private Dictionary<string, int> WeaponPrices = new(StringComparer.OrdinalIgnoreCase);
 
         public override void Load(bool hotReload)
         {
+            // Load prices from JSON before doing anything else
+            LoadPrices();
+
             RegisterEventHandler<EventRoundStart>(OnRoundStart);
             RegisterEventHandler<EventItemPickup>(OnItemPickup);
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
@@ -73,6 +50,67 @@ namespace ZeusLockdown
             {
                 Server.PrintToChatAll(" \x04[Zeus Lockdown]\x01 Zeus, Utility, and Knife only!");
             }, TimerFlags.REPEAT);
+        }
+
+        private void LoadPrices()
+        {
+            string filePath = Path.Combine(ModuleDirectory, "prices.json");
+
+            if (File.Exists(filePath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(filePath);
+                    var loadedPrices = JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+                    
+                    if (loadedPrices != null)
+                    {
+                        // Wrap the loaded dictionary to ensure it remains case-insensitive
+                        WeaponPrices = new Dictionary<string, int>(loadedPrices, StringComparer.OrdinalIgnoreCase);
+                        Console.WriteLine($"[Zeus Lockdown] Successfully loaded {WeaponPrices.Count} weapon prices from prices.json.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Zeus Lockdown] Error reading prices.json: {ex.Message}. Falling back to empty price list.");
+                }
+            }
+            else
+            {
+                // Fallback: Generate the default file if it's missing so the user has a template
+                Console.WriteLine("[Zeus Lockdown] prices.json not found. Generating default file...");
+                GenerateDefaultPricesFile(filePath);
+            }
+        }
+
+        private void GenerateDefaultPricesFile(string filePath)
+        {
+            var defaultPrices = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                {"glock", 200}, {"usp_silencer", 200}, {"hkp2000", 200}, {"elite", 300}, 
+                {"p250", 300}, {"tec9", 500}, {"cz75a", 500}, {"fiveseven", 500}, 
+                {"deagle", 700}, {"revolver", 600},
+                {"mac10", 1050}, {"mp9", 1250}, {"mp7", 1400}, {"mp5sd", 1500}, 
+                {"ump45", 1200}, {"p90", 2350}, {"bizon", 1300},
+                {"galilar", 1800}, {"famas", 1950}, {"ak47", 2700}, {"m4a1", 2900}, 
+                {"m4a1_silencer", 2900}, {"aug", 3300}, {"sg556", 3000}, {"ssg08", 1700}, 
+                {"awp", 4750}, {"g3sg1", 5000}, {"scar20", 5000},
+                {"nova", 1050}, {"xm1014", 2000}, {"mag7", 1300}, {"sawedoff", 1100}, 
+                {"m249", 5200}, {"negev", 1700}
+            };
+
+            WeaponPrices = defaultPrices;
+
+            try
+            {
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(defaultPrices, options);
+                File.WriteAllText(filePath, json);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Zeus Lockdown] Failed to generate default prices.json: {ex.Message}");
+            }
         }
 
         private bool IsItemAllowed(string itemName)
@@ -292,6 +330,3 @@ namespace ZeusLockdown
         }
     }
 }
-
-
-
