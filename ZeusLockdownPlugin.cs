@@ -1,6 +1,5 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
-using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Events;
 using CounterStrikeSharp.API.Modules.Timers;
@@ -14,9 +13,10 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.0.1"; // Version bump for Taser Respawn
+        public override string ModuleVersion => "1.0.2"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
+        // Clean list of actual entity names
         private readonly HashSet<string> allowedWeapons = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "taser",
@@ -25,7 +25,6 @@ namespace ZeusLockdown
             "smokegrenade", "smoke",
             "molotov", "incgrenade", "firebomb",
             "decoy", "decoygrenade", "c4",
-            "grenade0", "grenade1", "grenade2", "grenade3", "grenade4",
             "kevlar", "assaultsuit", "defuser" 
         };
 
@@ -34,12 +33,18 @@ namespace ZeusLockdown
             RegisterEventHandler<EventRoundStart>(OnRoundStart);
             RegisterEventHandler<EventItemPickup>(OnItemPickup);
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
-            RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn); // Added Spawn Event Hook
+            RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
+            
+            // NEW: Listen for actual purchases to warn the player
+            RegisterEventHandler<EventItemPurchase>(OnItemPurchase); 
+
             RegisterListener<Listeners.OnClientPutInServer>(OnPlayerJoin);
+            
+            // NEW: The "WeaponRestrict" method - catching weapons as they spawn into the world
+            RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned); 
 
-            AddCommandListener("buy", OnBuyCommand);
-
-            zeusReminderTimer = AddTimer(5.0f, () =>
+            // Adjusted to 60 seconds so it doesn't spam the chat too aggressively
+            zeusReminderTimer = AddTimer(60.0f, () =>
             {
                 Server.PrintToChatAll(" [Zeus Lockdown] Zeus, Utility, and Knife only!");
             }, TimerFlags.REPEAT);
@@ -49,28 +54,53 @@ namespace ZeusLockdown
         {
             if (string.IsNullOrWhiteSpace(weaponName)) return false;
 
-            return allowedWeapons.Contains(weaponName) || 
-                   weaponName.StartsWith("knife", StringComparison.OrdinalIgnoreCase) || 
-                   weaponName.Contains("bayonet", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private HookResult OnBuyCommand(CCSPlayerController? player, CommandInfo cmd)
-        {
-            if (player == null || !player.IsValid || player.TeamNum < 2)
-                return HookResult.Continue;
-
-            if (cmd.ArgCount < 2) return HookResult.Continue;
-
-            string weaponName = cmd.GetArg(1)
+            // Strip prefixes to check our clean list
+            string cleanName = weaponName
                 .ToLowerInvariant()
                 .Replace("weapon_", "")
                 .Replace("item_", "")
                 .Trim();
 
-            if (!IsWeaponAllowed(weaponName))
+            return allowedWeapons.Contains(cleanName) || 
+                   cleanName.StartsWith("knife", StringComparison.OrdinalIgnoreCase) || 
+                   cleanName.Contains("bayonet", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // --- NEW LOGIC: Instantly kill illegal weapons the moment the engine creates them ---
+        private void OnEntitySpawned(CEntityInstance entity)
+        {
+            if (entity == null || !entity.IsValid) return;
+
+            string name = entity.DesignerName;
+            if (string.IsNullOrEmpty(name)) return;
+
+            // Check if the spawned entity is a weapon or item
+            if (name.StartsWith("weapon_") || name.StartsWith("item_"))
             {
-                player.PrintToChat(" [Zeus Lockdown] Only Zeus and Utility are allowed.");
-                return HookResult.Stop; 
+                if (!IsWeaponAllowed(name))
+                {
+                    // Use NextFrame to safely remove the entity without crashing the server
+                    Server.NextFrame(() =>
+                    {
+                        if (entity != null && entity.IsValid)
+                        {
+                            entity.Remove();
+                        }
+                    });
+                }
+            }
+        }
+
+        // --- NEW LOGIC: Warn the player when they attempt to buy something illegal ---
+        private HookResult OnItemPurchase(EventItemPurchase ev, GameEventInfo info)
+        {
+            var player = ev.Userid;
+            if (player == null || !player.IsValid) return HookResult.Continue;
+
+            // The 'Weapon' property here is the actual entity name (e.g., "weapon_ak47")
+            if (!IsWeaponAllowed(ev.Weapon))
+            {
+                player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! Only Zeus and Utility are allowed.");
             }
 
             return HookResult.Continue;
@@ -103,14 +133,12 @@ namespace ZeusLockdown
             StripIllegalWeapons(player);
         }
 
-        // --- NEW LOGIC: Give Taser on Spawn ---
         private HookResult OnPlayerSpawn(EventPlayerSpawn ev, GameEventInfo info)
         {
             var player = ev.Userid;
 
             if (player == null || !player.IsValid || player.TeamNum < 2) return HookResult.Continue;
 
-            // Use NextFrame to ensure the game has finished its default weapon distribution
             Server.NextFrame(() =>
             {
                 if (player == null || !player.IsValid || !player.PawnIsAlive) return;
@@ -120,7 +148,6 @@ namespace ZeusLockdown
 
                 bool hasTaser = false;
 
-                // Check if they already have a Taser to prevent giving them duplicates
                 foreach (var weapon in weaponServices.MyWeapons ?? Enumerable.Empty<CHandle<CBasePlayerWeapon>>())
                 {
                     var weapEnt = weapon.Value;
@@ -134,7 +161,6 @@ namespace ZeusLockdown
                     }
                 }
 
-                // Give them a Taser with their equipped skin if they don't have one
                 if (!hasTaser)
                 {
                     player.GiveNamedItem("weapon_taser");
@@ -162,18 +188,13 @@ namespace ZeusLockdown
 
             AddTimer(2.0f, () =>
             {
-                // Use env_spark to natively generate electrical sparks without .vpcf files
                 var spark = Utilities.CreateEntityByName<CBaseEntity>("env_spark");
                 if (spark == null || !spark.IsValid) return;
 
                 spark.Teleport(deathPos, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-
                 spark.DispatchSpawn();
                 
-                // SparkOnce triggers the visual effect
                 spark.AcceptInput("SparkOnce");
-                
-                // Emit the requested zap sound
                 spark.EmitSound("Weapon_Taser.ChargeReady_Zap");
 
                 AddTimer(3.0f, () =>
@@ -188,15 +209,10 @@ namespace ZeusLockdown
             return HookResult.Continue;
         }
 
+        // Kept as a fallback just in case a player somehow manages to pick up something illegal
         private HookResult OnItemPickup(EventItemPickup ev, GameEventInfo info)
         {
-            string weaponName = ev.Item
-                .ToLowerInvariant()
-                .Replace("weapon_", "")
-                .Replace("item_", "")
-                .Trim();
-
-            if (!IsWeaponAllowed(weaponName))
+            if (!IsWeaponAllowed(ev.Item))
             {
                 var player = ev.Userid;
                 if (player != null && player.IsValid && player.PlayerPawn.Value != null)
@@ -208,11 +224,9 @@ namespace ZeusLockdown
                         var weapEnt = handle.Value;
                         if (weapEnt != null && weapEnt.IsValid)
                         {
-                            string className = weapEnt.DesignerName.Replace("weapon_", "").ToLowerInvariant();
-                            if (className == weaponName)
+                            if (!IsWeaponAllowed(weapEnt.DesignerName))
                             {
                                 weapEnt.Remove();
-                                break;
                             }
                         }
                     }
@@ -232,8 +246,7 @@ namespace ZeusLockdown
 
                 if (weapEnt != null && weapEnt.IsValid)
                 {
-                    string className = weapEnt.DesignerName.Replace("weapon_", "").ToLowerInvariant();
-                    if (!IsWeaponAllowed(className))
+                    if (!IsWeaponAllowed(weapEnt.DesignerName))
                     {
                         weapEnt.Remove();
                     }
@@ -247,6 +260,4 @@ namespace ZeusLockdown
             zeusReminderTimer = null;
         }
     }
-
 }
-
