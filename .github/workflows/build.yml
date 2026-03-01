@@ -1,0 +1,64 @@
+name: Build Zeus Lockdown Plugin
+
+on:
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # Allows you to run this manually from the Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup .NET 8.0
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Fetch Latest CounterStrikeSharp API
+      run: |
+        # Query GitHub API for the latest CS# release and find the runtime zip download URL
+        LATEST_URL=$(curl -s https://api.github.com/repos/roflmuffin/CounterStrikeSharp/releases/latest | jq -r '.assets[] | select(.name | contains("counterstrikesharp-with-runtime")) | .browser_download_url' | head -n 1)
+        
+        echo "Downloading CS# from: $LATEST_URL"
+        wget -qO cs_sharp.zip "$LATEST_URL"
+        
+        # Unzip and extract just the CounterStrikeSharp.API.dll to a lib folder
+        unzip -q cs_sharp.zip -d cs_sharp_temp
+        mkdir -p lib
+        find cs_sharp_temp -name "CounterStrikeSharp.API.dll" -exec cp {} lib/ \;
+        
+        # Cleanup the temp files
+        rm -rf cs_sharp.zip cs_sharp_temp
+
+    - name: Generate .csproj File
+      run: |
+        cat <<EOF > ZeusLockdown.csproj
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net8.0</TargetFramework>
+            <ImplicitUsings>enable</ImplicitUsings>
+            <Nullable>enable</Nullable>
+            <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+          </PropertyGroup>
+          <ItemGroup>
+            <Reference Include="CounterStrikeSharp.API">
+              <HintPath>lib/CounterStrikeSharp.API.dll</HintPath>
+              <Private>false</Private>
+            </Reference>
+          </ItemGroup>
+        </Project>
+        EOF
+
+    - name: Build and Publish Plugin
+      run: dotnet publish ZeusLockdown.csproj -c Release -o ./publish
+
+    - name: Upload Plugin Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ZeusLockdown
+        path: ./publish/ZeusLockdown.dll
+        retention-days: 14
