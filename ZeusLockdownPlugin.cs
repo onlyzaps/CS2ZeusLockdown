@@ -14,7 +14,7 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.1.1"; 
+        public override string ModuleVersion => "1.1.2"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
         // Clean, simple list. We no longer need to care about "grenade0" or "equipment2"
