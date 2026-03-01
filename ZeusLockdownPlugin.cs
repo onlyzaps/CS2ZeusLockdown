@@ -17,17 +17,12 @@ namespace ZeusLockdown
         public override string ModuleVersion => "1.1.1"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
-        // Unified list for both the buy menu AND map drops
+        // Clean, simple list. We no longer need to care about "grenade0" or "equipment2"
         private readonly HashSet<string> allowedItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            // Raw item names
             "taser", "flashbang", "hegrenade", "smokegrenade", "molotov", "incgrenade", 
             "decoy", "smoke", "firebomb", "grenade", "c4", "kevlar", "assaultsuit", 
-            "defuser", "vest", "vesthelm", 
-
-            // CS2 UI Loadout slot names (just in case)
-            "grenade0", "grenade1", "grenade2", "grenade3", "grenade4",
-            "equipment0", "equipment1", "equipment2", "equipment3", "equipment4"
+            "defuser", "vest", "vesthelm"
         };
 
         public override void Load(bool hotReload)
@@ -37,9 +32,8 @@ namespace ZeusLockdown
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
             RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
             
-            AddCommandListener("buy", OnPlayerBuy);
-            AddCommandListener("autobuy", OnPlayerAutoBuy);
-            AddCommandListener("rebuy", OnPlayerReBuy);
+            // THE WEAPON RESTRICT METHOD: Listen for the actual purchase event instead of the command
+            RegisterEventHandler<EventItemPurchase>(OnItemPurchase);
 
             RegisterListener<Listeners.OnClientPutInServer>(OnPlayerJoin);
             RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned); 
@@ -50,17 +44,14 @@ namespace ZeusLockdown
             }, TimerFlags.REPEAT);
         }
 
-        // --- UNIVERSAL CHECKER ---
         private bool IsItemAllowed(string itemName)
         {
             if (string.IsNullOrWhiteSpace(itemName)) return false;
 
-            // Strip out quotes, weapon_, and item_ prefixes so "weapon_taser" becomes "taser"
             string cleanName = itemName
                 .ToLowerInvariant()
                 .Replace("weapon_", "")
                 .Replace("item_", "")
-                .Replace("\"", "")
                 .Trim();
 
             return allowedItems.Contains(cleanName) || 
@@ -68,38 +59,37 @@ namespace ZeusLockdown
                    cleanName.Contains("bayonet", StringComparison.OrdinalIgnoreCase);
         }
 
-        private HookResult OnPlayerBuy(CCSPlayerController? player, CommandInfo info)
+        // --- THE PERFECT REFUND METHOD ---
+        private HookResult OnItemPurchase(EventItemPurchase ev, GameEventInfo info)
         {
+            var player = ev.Userid;
             if (player == null || !player.IsValid) return HookResult.Continue;
 
-            string rawBuyArg = info.GetArg(1);
-            if (string.IsNullOrWhiteSpace(rawBuyArg)) return HookResult.Continue;
+            // The event gives us the exact weapon name (e.g., "weapon_ak47") and exactly what the engine charged
+            string weaponPurchased = ev.Weapon;
+            int amountSpent = ev.Cost; 
 
-            // Run the raw argument through our universal checker
-            if (!IsItemAllowed(rawBuyArg))
+            if (!IsItemAllowed(weaponPurchased))
             {
-                // We print the exact raw argument here so you can see what CS2 is doing under the hood!
-                player.PrintToChat($" \x02[Zeus Lockdown]\x01 Restricted! Only Zeus/Utility allowed. (Debug: {rawBuyArg})");
-                return HookResult.Stop; 
+                // 1. Refund the EXACT amount they spent (fixes the $0 spam glitch)
+                if (amountSpent > 0 && player.InGameMoneyServices != null)
+                {
+                    player.InGameMoneyServices.Account += amountSpent;
+                    // Force the UI to update the player's wallet instantly
+                    Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInGameMoneyServices");
+                }
+
+                // 2. Warn the player
+                player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! Purchase refunded.");
+
+                // 3. Strip the illegal weapon immediately on the next frame
+                Server.NextFrame(() => StripIllegalWeapons(player));
             }
 
             return HookResult.Continue;
         }
 
-        private HookResult OnPlayerAutoBuy(CCSPlayerController? player, CommandInfo info)
-        {
-            if (player == null || !player.IsValid) return HookResult.Continue;
-            player.PrintToChat(" \x02[Zeus Lockdown]\x01 Autobuy is disabled in this mode.");
-            return HookResult.Stop; 
-        }
-
-        private HookResult OnPlayerReBuy(CCSPlayerController? player, CommandInfo info)
-        {
-            if (player == null || !player.IsValid) return HookResult.Continue;
-            player.PrintToChat(" \x02[Zeus Lockdown]\x01 Rebuy is disabled in this mode.");
-            return HookResult.Stop; 
-        }
-
+        // --- HANDLES MAP DROPS AND DROPPED ILLEGAL WEAPONS ---
         private void OnEntitySpawned(CEntityInstance entity)
         {
             if (entity == null || !entity.IsValid) return;
@@ -116,12 +106,9 @@ namespace ZeusLockdown
                         if (entity != null && entity.IsValid)
                         {
                             var baseEntity = entity as CBaseEntity;
-                            if (baseEntity != null)
+                            if (baseEntity != null && (baseEntity.OwnerEntity == null || !baseEntity.OwnerEntity.IsValid))
                             {
-                                if (baseEntity.OwnerEntity == null || !baseEntity.OwnerEntity.IsValid)
-                                {
-                                    baseEntity.Remove();
-                                }
+                                baseEntity.Remove();
                             }
                         }
                     });
@@ -271,4 +258,3 @@ namespace ZeusLockdown
         }
     }
 }
-
