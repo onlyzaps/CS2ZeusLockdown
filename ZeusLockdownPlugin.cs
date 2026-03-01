@@ -39,9 +39,17 @@ namespace ZeusLockdown
             {"ump45", 1200}, {"p90", 2350}, {"bizon", 1400},
 
             // Rifles
-            {"galilar", 1800}, {"famas", 2050}, {"ak47", 2700}, {"m4a1", 3100}, 
-            {"m4a1_silencer", 2900}, {"aug", 3300}, {"sg556", 3000}, {"ssg08", 1700}, 
-            {"awp", 4700}, {"g3sg1", 5000}, {"scar20", 5000},
+            {"galilar", 1800}, 
+            {"famas", 1950},           // Dropped from $2050 to $1950 in Jan 2025
+            {"ak47", 2700}, 
+            {"m4a1", 2900},            // M4A4 dropped from $3100 to $2900 in Jan 2025
+            {"m4a1_silencer", 2900},   // M4A1-S remains $2900
+            {"aug", 3300}, 
+            {"sg556", 3000}, 
+            {"ssg08", 1700}, 
+            {"awp", 4750},             // Fixed: Was listed as $4700 previously
+            {"g3sg1", 5000}, 
+            {"scar20", 5000},
 
             // Heavy
             {"nova", 1050}, {"xm1014", 2000}, {"mag7", 1300}, {"sawedoff", 1100}, 
@@ -284,4 +292,5 @@ namespace ZeusLockdown
         }
     }
 }
+
 
