@@ -35,8 +35,8 @@ namespace ZeusLockdown
             {"deagle", 700}, {"revolver", 600},
 
             // SMGs
-            {"mac10", 1050}, {"mp9", 1250}, {"mp7", 1500}, {"mp5sd", 1500}, 
-            {"ump45", 1200}, {"p90", 2350}, {"bizon", 1400},
+            {"mac10", 1050}, {"mp9", 1250}, {"mp7", 1400}, {"mp5sd", 1500}, 
+            {"ump45", 1200}, {"p90", 2350}, {"bizon", 1300},
 
             // Rifles
             {"galilar", 1800}, 
@@ -292,5 +292,6 @@ namespace ZeusLockdown
         }
     }
 }
+
 
 
