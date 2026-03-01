@@ -14,7 +14,7 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "3.4"; // Version bump for Taser Respawn
+        public override string ModuleVersion => "1.0"; // Version bump for Taser Respawn
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
         private readonly HashSet<string> allowedWeapons = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -249,3 +249,4 @@ namespace ZeusLockdown
     }
 
 }
+
