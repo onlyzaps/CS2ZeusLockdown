@@ -1,5 +1,6 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Events;
 using CounterStrikeSharp.API.Modules.Timers;
@@ -13,39 +14,25 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.0.8"; 
+        public override string ModuleVersion => "1.0.7"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
-        // Clean list of actual entity names
+        // Used for checking physical entities (drops, pickups, map spawns)
         private readonly HashSet<string> allowedWeapons = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "taser",
-            "flashbang",
-            "hegrenade", "grenade",
-            "smokegrenade", "smoke",
-            "molotov", "incgrenade", "firebomb",
-            "decoy", "decoygrenade", "c4",
+            "taser", "flashbang", "hegrenade", "grenade", "smokegrenade", "smoke",
+            "molotov", "incgrenade", "firebomb", "decoy", "decoygrenade", "c4",
             "kevlar", "assaultsuit", "defuser" 
         };
 
-        // Hardcoded price dictionary for instantaneous refunds
-        private readonly Dictionary<string, int> weaponPrices = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        // NEW: Strictly for the buy menu interceptor. 
+        // We include the raw UI slot commands CS2 sends under the hood for utilities.
+        private readonly HashSet<string> allowedBuyCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            // Pistols
-            { "glock", 200 }, { "hkp2000", 200 }, { "usp_silencer", 200 },
-            { "elite", 300 }, { "p250", 300 }, { "tec9", 500 },
-            { "fiveseven", 500 }, { "cz75a", 500 }, { "deagle", 700 }, { "revolver", 600 },
-            // SMGs
-            { "mac10", 1050 }, { "mp9", 1250 }, { "mp7", 1500 }, { "mp5sd", 1500 },
-            { "ump45", 1200 }, { "p90", 2350 }, { "bizon", 1400 },
-            // Shotguns
-            { "nova", 1050 }, { "xm1014", 2000 }, { "sawedoff", 1100 }, { "mag7", 1300 },
-            // Rifles
-            { "galilar", 1800 }, { "famas", 2050 }, { "ak47", 2700 }, { "m4a1", 3100 },
-            { "m4a1_silencer", 2900 }, { "ssg08", 1700 }, { "aug", 3300 },
-            { "sg556", 3000 }, { "awp", 4700 }, { "scar20", 5000 }, { "g3sg1", 5000 },
-            // Heavy
-            { "m249", 5200 }, { "negev", 1700 }
+            "taser",
+            "flashbang", "hegrenade", "smokegrenade", "molotov", "incgrenade", "decoy", "smoke", "firebomb", "grenade",
+            "grenade0", "grenade1", "grenade2", "grenade3", "grenade4", // CS2 Loadout slots for grenades
+            "kevlar", "assaultsuit", "defuser", "vest", "vesthelm" // Include aliases for armor
         };
 
         public override void Load(bool hotReload)
@@ -55,8 +42,10 @@ namespace ZeusLockdown
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
             RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
             
-            // Listen for the completed transaction to intercept the actual item name
-            RegisterEventHandler<EventItemPurchase>(OnItemPurchase); 
+            // We use command listeners to block the transaction BEFORE money is touched
+            AddCommandListener("buy", OnPlayerBuy);
+            AddCommandListener("autobuy", OnPlayerAutoBuy);
+            AddCommandListener("rebuy", OnPlayerReBuy);
 
             RegisterListener<Listeners.OnClientPutInServer>(OnPlayerJoin);
             RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned); 
@@ -82,38 +71,41 @@ namespace ZeusLockdown
                    cleanName.Contains("bayonet", StringComparison.OrdinalIgnoreCase);
         }
 
-        // --- THE REFUND LOGIC ---
-        private HookResult OnItemPurchase(EventItemPurchase ev, GameEventInfo info)
+        // --- THE BULLETPROOF BUY BLOCKER ---
+        private HookResult OnPlayerBuy(CCSPlayerController? player, CommandInfo info)
         {
-            var player = ev.Userid;
             if (player == null || !player.IsValid) return HookResult.Continue;
 
-            string cleanName = ev.Weapon.ToLowerInvariant().Replace("weapon_", "").Replace("item_", "").Trim();
+            // Grab what they are trying to buy (e.g., "rifle1", "taser", "grenade0")
+            string buyItem = info.GetArg(1).ToLowerInvariant().Trim();
+            if (string.IsNullOrWhiteSpace(buyItem)) return HookResult.Continue;
 
-            if (!IsWeaponAllowed(cleanName))
+            // If the command is NOT explicitly in our safe list (meaning they clicked a pistol, rifle, etc.)
+            if (!allowedBuyCommands.Contains(buyItem))
             {
-                player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! You have been refunded.");
-
-                // 1. Refund the player
-                var moneyServices = player.InGameMoneyServices;
-                if (moneyServices != null && weaponPrices.TryGetValue(cleanName, out int price))
-                {
-                    moneyServices.Account += price;
-                    // Force the server to update the player's HUD instantly
-                    Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInGameMoneyServices");
-                }
-
-                // 2. Wait exactly one frame for the weapon to attach to the player, then delete it
-                Server.NextFrame(() =>
-                {
-                    if (player == null || !player.IsValid) return;
-                    StripIllegalWeapons(player);
-                });
+                player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! Only Zeus and Utility are allowed.");
+                // HookResult.Stop halts the game engine here. No money is spent, no gun is spawned.
+                return HookResult.Stop; 
             }
 
             return HookResult.Continue;
         }
 
+        private HookResult OnPlayerAutoBuy(CCSPlayerController? player, CommandInfo info)
+        {
+            if (player == null || !player.IsValid) return HookResult.Continue;
+            player.PrintToChat(" \x02[Zeus Lockdown]\x01 Autobuy is disabled in this mode.");
+            return HookResult.Stop; 
+        }
+
+        private HookResult OnPlayerReBuy(CCSPlayerController? player, CommandInfo info)
+        {
+            if (player == null || !player.IsValid) return HookResult.Continue;
+            player.PrintToChat(" \x02[Zeus Lockdown]\x01 Rebuy is disabled in this mode.");
+            return HookResult.Stop; 
+        }
+
+        // --- HANDLES MAP DROPS ---
         private void OnEntitySpawned(CEntityInstance entity)
         {
             if (entity == null || !entity.IsValid) return;
@@ -129,13 +121,10 @@ namespace ZeusLockdown
                     {
                         if (entity != null && entity.IsValid)
                         {
-                            // Cast the generic entity instance to a CBaseEntity to access OwnerEntity
+                            // Safely cast to CBaseEntity so the compiler knows what OwnerEntity is
                             var baseEntity = entity as CBaseEntity;
-
                             if (baseEntity != null)
                             {
-                                // Only remove it if it doesn't belong to a player (map drops)
-                                // Player removals are handled by StripIllegalWeapons
                                 if (baseEntity.OwnerEntity == null || !baseEntity.OwnerEntity.IsValid)
                                 {
                                     baseEntity.Remove();
@@ -289,4 +278,3 @@ namespace ZeusLockdown
         }
     }
 }
-
