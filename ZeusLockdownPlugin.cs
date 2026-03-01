@@ -1,333 +1,350 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
-using CounterStrikeSharp.API.Modules.Commands;
-using CounterStrikeSharp.API.Modules.Entities;
-using CounterStrikeSharp.API.Modules.Events;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text.Json;
 
-namespace ZeusLockdown
+namespace ZeusBotAI
 {
-    public class ZeusLockdownPlugin : BasePlugin
+    public class ZeusBotAIPlugin : BasePlugin
     {
-        public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.1.8"; 
-        private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
+        public override string ModuleName => "Zeus Bot AI (Evasive Brawler)";
+        public override string ModuleVersion => "1.5.0";
+        private CounterStrikeSharp.API.Modules.Timers.Timer? botAiTimer;
+        
+        private readonly HashSet<uint> reactingBots = new HashSet<uint>();
+        private readonly Random random = new Random();
 
-        // Clean, simple list for allowed items
-        private readonly HashSet<string> allowedItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "taser", "flashbang", "hegrenade", "smokegrenade", "molotov", "incgrenade", 
-            "decoy", "smoke", "firebomb", "grenade", "c4", "kevlar", "assaultsuit", 
-            "defuser", "vest", "vesthelm"
-        };
-
-        // Replaced hardcoded dictionary with an empty one that will be populated from JSON
-        private Dictionary<string, int> WeaponPrices = new(StringComparer.OrdinalIgnoreCase);
+        // State machine tracking for smooth OnTick movement
+        private readonly Dictionary<uint, float> strafeTimers = new Dictionary<uint, float>();
+        private readonly Dictionary<uint, ulong> strafeDirections = new Dictionary<uint, ulong>();
+        private readonly Dictionary<uint, ulong> activeMovementOverrides = new Dictionary<uint, ulong>();
 
         public override void Load(bool hotReload)
         {
-            // Load prices from JSON before doing anything else
-            LoadPrices();
-
-            RegisterEventHandler<EventRoundStart>(OnRoundStart);
-            RegisterEventHandler<EventItemPickup>(OnItemPickup);
-            RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
-            RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
+            // The "Brain": Runs 10x a second to process complex math and target selection
+            botAiTimer = AddTimer(0.1f, RunBotScanner, TimerFlags.REPEAT);
             
-            // Listen for the actual purchase event
-            RegisterEventHandler<EventItemPurchase>(OnItemPurchase);
-
-            RegisterListener<Listeners.OnClientPutInServer>(OnPlayerJoin);
-            RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned); 
-
-            zeusReminderTimer = AddTimer(60.0f, () =>
-            {
-                Server.PrintToChatAll(" \x04[Zeus Lockdown]\x01 Zeus, Utility, and Knife only!");
-            }, TimerFlags.REPEAT);
+            // The "Muscles": Runs 64x a second to forcefully hold down WASD keys smoothly
+            RegisterListener<Listeners.OnTick>(ForceBotMovement);
+            
+            Console.WriteLine("[Zeus Bot AI] Close-quarters evasive strafing loaded.");
         }
 
-        private void LoadPrices()
+        private void ForceBotMovement()
         {
-            string filePath = Path.Combine(ModuleDirectory, "prices.json");
-
-            if (File.Exists(filePath))
+            foreach (var kvp in activeMovementOverrides)
             {
-                try
+                if (kvp.Value == 0) continue; // If mask is 0, let standard Bot AI take over
+
+                var bot = Utilities.GetPlayerFromIndex((int)kvp.Key);
+                if (bot != null && bot.IsValid && bot.PawnIsAlive && bot.PlayerPawn.Value?.MovementServices != null)
                 {
-                    string json = File.ReadAllText(filePath);
-                    var loadedPrices = JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+                    // Clear the standard Bot WASD keys so they don't fight our inputs
+                    bot.PlayerPawn.Value.MovementServices.Buttons.ButtonStates[0] &= ~((ulong)PlayerButtons.Forward | (ulong)PlayerButtons.Back | (ulong)PlayerButtons.Moveleft | (ulong)PlayerButtons.Moveright);
                     
-                    if (loadedPrices != null)
+                    // Jam our calculated evasive movement keys down
+                    bot.PlayerPawn.Value.MovementServices.Buttons.ButtonStates[0] |= kvp.Value;
+                }
+            }
+        }
+
+        private void RunBotScanner()
+        {
+            var players = Utilities.GetPlayers();
+            var bots = players.Where(p => p != null && p.IsValid && p.IsBot && p.PawnIsAlive).ToList();
+            var aliveEnemies = players.Where(p => p != null && p.IsValid && p.PawnIsAlive && !p.IsBot).ToList();
+
+            if (!bots.Any()) return;
+
+            foreach (var bot in bots)
+            {
+                var botPawn = bot.PlayerPawn.Value;
+                if (botPawn == null) continue;
+
+                var target = GetHighestPriorityTarget(bot, botPawn, aliveEnemies);
+                if (target == null) 
+                {
+                    activeMovementOverrides[bot.Index] = 0; // Release movement control
+                    continue;
+                }
+
+                var targetPawn = target.PlayerPawn.Value;
+                if (targetPawn == null) continue;
+
+                var botOrigin = botPawn.AbsOrigin;
+                var targetOrigin = targetPawn.AbsOrigin;
+                if (botOrigin == null || targetOrigin == null) continue;
+
+                float distance = (botOrigin - targetOrigin).Length();
+                ulong currentMovementMask = 0;
+
+                // THE BRAWL ZONE (Increased from 500 to 600 to start evasive maneuvers earlier)
+                if (distance <= 600.0f)
+                {
+                    EnsureBotHasAndHoldsZeus(bot, botPawn);
+
+                    // 1. STRAFE LOGIC: Pick a direction and hold it, swap erratically to dodge bullets
+                    if (!strafeTimers.TryGetValue(bot.Index, out float nextStrafe) || Server.CurrentTime > nextStrafe)
                     {
-                        // Wrap the loaded dictionary to ensure it remains case-insensitive
-                        WeaponPrices = new Dictionary<string, int>(loadedPrices, StringComparer.OrdinalIgnoreCase);
-                        Console.WriteLine($"[Zeus Lockdown] Successfully loaded {WeaponPrices.Count} weapon prices from prices.json.");
+                        strafeDirections[bot.Index] = random.NextDouble() > 0.5 ? (ulong)PlayerButtons.Moveleft : (ulong)PlayerButtons.Moveright;
+                        // Hold this strafe for 0.3 to 1.2 seconds before zig-zagging the other way
+                        strafeTimers[bot.Index] = Server.CurrentTime + (random.NextSingle() * 0.9f + 0.3f);
+                    }
+                    currentMovementMask |= strafeDirections[bot.Index];
+
+                    // 2. GAP CONTROL: Maintain the Zeus sweet spot
+                    if (distance > 160.0f) 
+                    {
+                        currentMovementMask |= (ulong)PlayerButtons.Forward; // Diagonal push
+                    }
+                    else if (distance < 110.0f) 
+                    {
+                        currentMovementMask |= (ulong)PlayerButtons.Back; // Backpedal to avoid phasing through the player
+                    }
+
+                    // 3. CHAOTIC JUMP DODGES: 5% chance per tick to jump while strafing to mess up headshot tracking
+                    if (random.NextDouble() < 0.05 && botPawn.MovementServices != null)
+                    {
+                        botPawn.MovementServices.Buttons.ButtonStates[0] |= (ulong)PlayerButtons.Jump;
+                        AddTimer(0.1f, () => {
+                            if (bot.IsValid && bot.PlayerPawn.Value?.MovementServices != null)
+                                bot.PlayerPawn.Value.MovementServices.Buttons.ButtonStates[0] |= (ulong)PlayerButtons.Duck;
+                        });
+                        AddTimer(0.5f, () => {
+                            if (bot.IsValid && bot.PlayerPawn.Value?.MovementServices != null)
+                            {
+                                bot.PlayerPawn.Value.MovementServices.Buttons.ButtonStates[0] &= ~(ulong)PlayerButtons.Jump;
+                                bot.PlayerPawn.Value.MovementServices.Buttons.ButtonStates[0] &= ~(ulong)PlayerButtons.Duck;
+                            }
+                        });
+                    }
+
+                    // 4. PULL THE TRIGGER
+                    if (distance <= 170.0f && !reactingBots.Contains(bot.Index))
+                    {
+                        StartHumanReaction(bot, botPawn, targetPawn);
                     }
                 }
-                catch (Exception ex)
+
+                // Save our calculated movement keys to be injected by the OnTick method
+                activeMovementOverrides[bot.Index] = currentMovementMask;
+            }
+        }
+
+        private void EnsureBotHasAndHoldsZeus(CCSPlayerController bot, CCSPlayerPawn botPawn)
+        {
+            var weaponServices = botPawn.WeaponServices;
+            if (weaponServices == null) return;
+
+            bool hasZeus = false;
+            uint taserHandleRaw = 0;
+
+            if (weaponServices.MyWeapons != null)
+            {
+                foreach (var weaponHandle in weaponServices.MyWeapons)
                 {
-                    Console.WriteLine($"[Zeus Lockdown] Error reading prices.json: {ex.Message}. Falling back to empty price list.");
+                    var weapon = weaponHandle.Value;
+                    if (weapon != null && weapon.DesignerName != null && weapon.DesignerName.Contains("taser"))
+                    {
+                        hasZeus = true;
+                        taserHandleRaw = weaponHandle.Raw;
+                        break;
+                    }
                 }
+            }
+
+            if (!hasZeus)
+            {
+                bot.GiveNamedItem("weapon_taser");
             }
             else
             {
-                // Fallback: Generate the default file if it's missing so the user has a template
-                Console.WriteLine("[Zeus Lockdown] prices.json not found. Generating default file...");
-                GenerateDefaultPricesFile(filePath);
-            }
-        }
-
-        private void GenerateDefaultPricesFile(string filePath)
-        {
-            var defaultPrices = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-            {
-                {"glock", 200}, {"usp_silencer", 200}, {"hkp2000", 200}, {"elite", 300}, 
-                {"p250", 300}, {"tec9", 500}, {"cz75a", 500}, {"fiveseven", 500}, 
-                {"deagle", 700}, {"revolver", 600},
-                {"mac10", 1050}, {"mp9", 1250}, {"mp7", 1400}, {"mp5sd", 1500}, 
-                {"ump45", 1200}, {"p90", 2350}, {"bizon", 1300},
-                {"galilar", 1800}, {"famas", 1950}, {"ak47", 2700}, {"m4a1", 2900}, 
-                {"m4a1_silencer", 2900}, {"aug", 3300}, {"sg556", 3000}, {"ssg08", 1700}, 
-                {"awp", 4750}, {"g3sg1", 5000}, {"scar20", 5000},
-                {"nova", 1050}, {"xm1014", 2000}, {"mag7", 1300}, {"sawedoff", 1100}, 
-                {"m249", 5200}, {"negev", 1700}
-            };
-
-            WeaponPrices = defaultPrices;
-
-            try
-            {
-                var options = new JsonSerializerOptions { WriteIndented = true };
-                string json = JsonSerializer.Serialize(defaultPrices, options);
-                File.WriteAllText(filePath, json);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Zeus Lockdown] Failed to generate default prices.json: {ex.Message}");
-            }
-        }
-
-        private bool IsItemAllowed(string itemName)
-        {
-            if (string.IsNullOrWhiteSpace(itemName)) return false;
-
-            string cleanName = itemName
-                .ToLowerInvariant()
-                .Replace("weapon_", "")
-                .Replace("item_", "")
-                .Trim();
-
-            return allowedItems.Contains(cleanName) || 
-                   cleanName.StartsWith("knife", StringComparison.OrdinalIgnoreCase) || 
-                   cleanName.Contains("bayonet", StringComparison.OrdinalIgnoreCase);
-        }
-
-        // --- THE PERFECT REFUND METHOD ---
-        private HookResult OnItemPurchase(EventItemPurchase ev, GameEventInfo info)
-        {
-            var player = ev.Userid;
-            if (player == null || !player.IsValid) return HookResult.Continue;
-
-            string weaponPurchased = ev.Weapon;
-
-            if (!IsItemAllowed(weaponPurchased))
-            {
-                string cleanName = weaponPurchased.ToLowerInvariant().Replace("weapon_", "").Replace("item_", "").Trim();
-                
-                // Lookup the price in our dictionary and refund them
-                if (WeaponPrices.TryGetValue(cleanName, out int refundAmount))
+                var activeWeapon = weaponServices.ActiveWeapon.Value;
+                if (activeWeapon != null && activeWeapon.DesignerName != null && !activeWeapon.DesignerName.Contains("taser"))
                 {
-                    if (player.InGameMoneyServices != null)
-                    {
-                        player.InGameMoneyServices.Account += refundAmount;
-                        // Force the UI to update the player's wallet instantly
-                        Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInGameMoneyServices");
-                    }
+                    weaponServices.ActiveWeapon.Raw = taserHandleRaw;
+                    Utilities.SetStateChanged(botPawn, "CBasePlayerPawn", "m_pWeaponServices");
+                }
+            }
+        }
+
+        private CCSPlayerController? GetHighestPriorityTarget(CCSPlayerController bot, CCSPlayerPawn botPawn, List<CCSPlayerController> enemies)
+        {
+            CCSPlayerController? bestTarget = null;
+            float highestThreatScore = -float.MaxValue;
+
+            var botPos = botPawn.AbsOrigin;
+            var botAngles = botPawn.EyeAngles;
+            if (botPos == null || botAngles == null) return null;
+
+            Vector botForward = GetForwardVector(botAngles);
+
+            foreach (var enemy in enemies)
+            {
+                if (enemy.TeamNum == bot.TeamNum) continue;
+                
+                var enemyPawn = enemy.PlayerPawn.Value;
+                if (enemyPawn == null) continue;
+                
+                var enemyPos = enemyPawn.AbsOrigin;
+                var enemyAngles = enemyPawn.EyeAngles;
+                if (enemyPos == null || enemyAngles == null) continue;
+
+                float distance = (botPos - enemyPos).Length();
+                if (distance > 1500.0f) continue; 
+
+                float threatScore = 0;
+                threatScore += (1500.0f - distance);
+
+                Vector dirToEnemy = GetNormalizedVector(botPos, enemyPos);
+                Vector dirToBot = GetNormalizedVector(enemyPos, botPos);
+                Vector enemyForward = GetForwardVector(enemyAngles);
+
+                // BRAWLER OVERRIDE: If an enemy is actively aiming at the bot, they are priority #1 so we can strafe their shots
+                float enemyDot = DotProduct(enemyForward, dirToBot);
+                if (enemyDot > 0.85f) threatScore += 1200.0f; 
+                else if (enemyDot > 0.5f) threatScore += 400.0f; 
+
+                float botDot = DotProduct(botForward, dirToEnemy);
+                if (botDot > 0.7f) threatScore += 400.0f; 
+                else if (botDot < 0.0f) threatScore -= 300.0f; 
+
+                var weaponServices = enemyPawn.WeaponServices;
+                if (weaponServices?.ActiveWeapon?.Value != null)
+                {
+                    string weaponName = weaponServices.ActiveWeapon.Value.DesignerName ?? "";
+                    if (weaponName.Contains("grenade") || weaponName.Contains("flashbang") || weaponName.Contains("smokegrenade") || weaponName.Contains("decoy") || weaponName.Contains("molotov") || weaponName.Contains("incgrenade") || weaponName.Contains("c4"))
+                        threatScore -= 600.0f; // Brawlers ignore defenseless targets to focus immediate threats
+                    else if (weaponName.Contains("knife"))
+                        threatScore -= 150.0f; 
+                    else 
+                        threatScore += 300.0f; 
                 }
 
-                // Warn the player
-                player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! Purchase refunded.");
+                // If someone enters the kill zone, commit immediately
+                if (distance <= 200.0f) threatScore += 3000.0f; 
 
-                // Strip the illegal weapon immediately on the next frame
-                Server.NextFrame(() => StripIllegalWeapons(player));
+                if (threatScore > highestThreatScore)
+                {
+                    highestThreatScore = threatScore;
+                    bestTarget = enemy;
+                }
             }
-
-            return HookResult.Continue;
+            return bestTarget;
         }
 
-        // --- HANDLES MAP DROPS AND DROPPED ILLEGAL WEAPONS ---
-        private void OnEntitySpawned(CEntityInstance entity)
+        private void StartHumanReaction(CCSPlayerController bot, CCSPlayerPawn botPawn, CCSPlayerPawn targetPawn)
         {
-            if (entity == null || !entity.IsValid) return;
+            uint botIndex = bot.Index;
+            reactingBots.Add(botIndex);
 
-            string name = entity.DesignerName;
-            if (string.IsNullOrEmpty(name)) return;
+            var botPos = botPawn.AbsOrigin;
+            var targetPos = targetPawn.AbsOrigin;
+            var botAngles = botPawn.EyeAngles;
 
-            if (name.StartsWith("weapon_") || name.StartsWith("item_"))
+            if (botPos == null || targetPos == null || botAngles == null)
             {
-                if (!IsItemAllowed(name))
+                reactingBots.Remove(botIndex);
+                return;
+            }
+
+            float deltaX = targetPos.X - botPos.X;
+            float deltaY = targetPos.Y - botPos.Y;
+            float perfectYaw = (float)(Math.Atan2(deltaY, deltaX) * 180.0 / Math.PI);
+
+            float currentYaw = botAngles.Y;
+            float yawDifference = Math.Abs(perfectYaw - currentYaw);
+            if (yawDifference > 180.0f) yawDifference = 360.0f - yawDifference;
+
+            float baseReaction = (random.NextSingle() * 0.10f) + 0.10f;
+            float flickPenalty = (yawDifference / 180.0f) * 0.15f; 
+            float reactionTime = baseReaction + flickPenalty;
+
+            AddTimer(reactionTime, () =>
+            {
+                reactingBots.Remove(botIndex);
+
+                if (!bot.IsValid || !bot.PawnIsAlive || !targetPawn.IsValid) return;
+
+                var newBotPos = botPawn.AbsOrigin;
+                var newTargetPos = targetPawn.AbsOrigin;
+                if (newBotPos == null || newTargetPos == null) return;
+
+                float distance = (newBotPos - newTargetPos).Length();
+                if (distance > 185.0f) return;
+
+                deltaX = newTargetPos.X - newBotPos.X;
+                deltaY = newTargetPos.Y - newBotPos.Y;
+                float deltaZ = (newTargetPos.Z + 40.0f) - (newBotPos.Z + 40.0f); 
+
+                perfectYaw = (float)(Math.Atan2(deltaY, deltaX) * 180.0 / Math.PI);
+                float perfectPitch = (float)(Math.Atan2(-deltaZ, Math.Sqrt(deltaX * deltaX + deltaY * deltaY)) * 180.0 / Math.PI);
+
+                float inaccuracyScale = 1.0f + ((yawDifference / 180.0f) * 3.0f);
+                float panicYaw = perfectYaw + ((random.NextSingle() * (inaccuracyScale * 2)) - inaccuracyScale);
+                float panicPitch = perfectPitch + ((random.NextSingle() * (inaccuracyScale * 2)) - inaccuracyScale);
+
+                var newAngles = new QAngle(panicPitch, panicYaw, 0);
+                botPawn.Teleport(newBotPos, newAngles, new Vector(0, 0, 0));
+
+                if (botPawn.MovementServices != null)
                 {
-                    Server.NextFrame(() =>
-                    {
-                        if (entity != null && entity.IsValid)
+                    botPawn.MovementServices.Buttons.ButtonStates[0] |= (ulong)PlayerButtons.Attack;
+                    
+                    AddTimer(0.05f, () => 
+                    { 
+                        if (bot.IsValid)
                         {
-                            var baseEntity = entity as CBaseEntity;
-                            if (baseEntity != null && (baseEntity.OwnerEntity == null || !baseEntity.OwnerEntity.IsValid))
+                            var currentPawn = bot.PlayerPawn.Value;
+                            if (currentPawn != null && currentPawn.IsValid && currentPawn.MovementServices != null)
                             {
-                                baseEntity.Remove();
+                                currentPawn.MovementServices.Buttons.ButtonStates[0] &= ~(ulong)PlayerButtons.Attack; 
                             }
                         }
                     });
                 }
-            }
-        }
-
-        private HookResult OnRoundStart(EventRoundStart ev, GameEventInfo info)
-        {
-            Server.ExecuteCommand("mp_taser_recharge_time 1");
-            Server.ExecuteCommand("sv_enablebunnyhopping 1");
-            Server.ExecuteCommand("sv_autobunnyhopping 1");
-            Server.ExecuteCommand("sv_staminamax 0");
-            Server.ExecuteCommand("sv_staminajumpcost 0");
-            Server.ExecuteCommand("sv_staminalandcost 0");
-            Server.ExecuteCommand("sv_staminarecoveryrate 0");
-            
-            foreach (var player in Utilities.GetPlayers())
-            {
-                if (player == null || !player.IsValid || !player.PawnIsAlive || player.TeamNum < 2) continue;
-                StripIllegalWeapons(player);
-            }
-
-            return HookResult.Continue;
-        }
-
-        private void OnPlayerJoin(int playerSlot)
-        {
-            var player = Utilities.GetPlayerFromSlot(playerSlot);
-            if (player == null || !player.IsValid || player.SteamID == 0) return;
-
-            StripIllegalWeapons(player);
-        }
-
-        private HookResult OnPlayerSpawn(EventPlayerSpawn ev, GameEventInfo info)
-        {
-            var player = ev.Userid;
-
-            if (player == null || !player.IsValid || player.TeamNum < 2) return HookResult.Continue;
-
-            Server.NextFrame(() =>
-            {
-                if (player == null || !player.IsValid || !player.PawnIsAlive) return;
-
-                var weaponServices = player.PlayerPawn.Value?.WeaponServices;
-                if (weaponServices == null) return;
-
-                bool hasTaser = false;
-
-                foreach (var weapon in weaponServices.MyWeapons ?? Enumerable.Empty<CHandle<CBasePlayerWeapon>>())
-                {
-                    var weapEnt = weapon.Value;
-                    if (weapEnt != null && weapEnt.IsValid)
-                    {
-                        if (weapEnt.DesignerName.Contains("taser", StringComparison.OrdinalIgnoreCase))
-                        {
-                            hasTaser = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!hasTaser)
-                {
-                    player.GiveNamedItem("weapon_taser");
-                }
             });
-
-            return HookResult.Continue;
         }
 
-        private HookResult OnPlayerDeath(EventPlayerDeath ev, GameEventInfo info)
+        private Vector GetForwardVector(QAngle angles)
         {
-            if (ev.Weapon != "taser") return HookResult.Continue;
-
-            var victim = ev.Userid;
-
-            if (victim == null || !victim.IsValid) return HookResult.Continue;
-            
-            var pawn = victim.PlayerPawn.Value;
-            if (pawn == null || !pawn.IsValid) return HookResult.Continue;
-
-            var position = pawn.AbsOrigin;
-            if (position == null) return HookResult.Continue;
-
-            var deathPos = new Vector(position.X, position.Y, position.Z);
-
-            AddTimer(2.0f, () =>
-            {
-                var spark = Utilities.CreateEntityByName<CBaseEntity>("env_spark");
-                if (spark == null || !spark.IsValid) return;
-
-                spark.Teleport(deathPos, new QAngle(0, 0, 0), new Vector(0, 0, 0));
-                spark.DispatchSpawn();
-                
-                spark.AcceptInput("SparkOnce");
-                spark.EmitSound("Weapon_Taser.ChargeReady_Zap");
-
-                AddTimer(3.0f, () =>
-                {
-                    if (spark != null && spark.IsValid)
-                    {
-                        spark.Remove(); 
-                    }
-                });
-            });
-
-            return HookResult.Continue;
+            float pitchRad = angles.X * (float)(Math.PI / 180.0);
+            float yawRad = angles.Y * (float)(Math.PI / 180.0);
+            return new Vector(
+                (float)(Math.Cos(yawRad) * Math.Cos(pitchRad)),
+                (float)(Math.Sin(yawRad) * Math.Cos(pitchRad)),
+                (float)(-Math.Sin(pitchRad))
+            );
         }
 
-        private HookResult OnItemPickup(EventItemPickup ev, GameEventInfo info)
+        private Vector GetNormalizedVector(Vector from, Vector to)
         {
-            if (!IsItemAllowed(ev.Item))
-            {
-                var player = ev.Userid;
-                if (player != null && player.IsValid)
-                {
-                    StripIllegalWeapons(player);
-                }
-            }
-
-            return HookResult.Continue;
+            Vector dir = new Vector(to.X - from.X, to.Y - from.Y, to.Z - from.Z);
+            float length = (float)Math.Sqrt(dir.X * dir.X + dir.Y * dir.Y + dir.Z * dir.Z);
+            if (length == 0) return new Vector(0, 0, 0);
+            dir.X /= length;
+            dir.Y /= length;
+            dir.Z /= length;
+            return dir;
         }
 
-        private void StripIllegalWeapons(CCSPlayerController player)
+        private float DotProduct(Vector v1, Vector v2)
         {
-            if (player.PlayerPawn.Value == null || player.PlayerPawn.Value.WeaponServices == null) return;
-
-            foreach (var weapon in player.PlayerPawn.Value.WeaponServices.MyWeapons ?? Enumerable.Empty<CHandle<CBasePlayerWeapon>>())
-            {
-                var weapEnt = weapon.Value;
-
-                if (weapEnt != null && weapEnt.IsValid)
-                {
-                    if (!IsItemAllowed(weapEnt.DesignerName))
-                    {
-                        weapEnt.Remove();
-                    }
-                }
-            }
+            return (v1.X * v2.X) + (v1.Y * v2.Y) + (v1.Z * v2.Z);
         }
 
         public override void Unload(bool hotReload)
         {
-            zeusReminderTimer?.Kill();
-            zeusReminderTimer = null;
+            botAiTimer?.Kill();
+            botAiTimer = null;
+            reactingBots.Clear();
+            activeMovementOverrides.Clear();
+            strafeTimers.Clear();
+            strafeDirections.Clear();
+            RemoveListener<Listeners.OnTick>(ForceBotMovement);
         }
     }
 }
-
