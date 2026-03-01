@@ -14,15 +14,38 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.1.2"; 
+        public override string ModuleVersion => "1.1.0"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
-        // Clean, simple list. We no longer need to care about "grenade0" or "equipment2"
+        // Clean, simple list for allowed items
         private readonly HashSet<string> allowedItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "taser", "flashbang", "hegrenade", "smokegrenade", "molotov", "incgrenade", 
             "decoy", "smoke", "firebomb", "grenade", "c4", "kevlar", "assaultsuit", 
             "defuser", "vest", "vesthelm"
+        };
+
+        // --- THE WEAPON RESTRICT METHOD ---
+        // Hardcoded dictionary of standard CS2 economy prices for illegal items
+        private readonly Dictionary<string, int> WeaponPrices = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // Pistols
+            {"glock", 200}, {"usp_silencer", 200}, {"hkp2000", 200}, {"elite", 300}, 
+            {"p250", 300}, {"tec9", 500}, {"cz75a", 500}, {"fiveseven", 500}, 
+            {"deagle", 700}, {"revolver", 600},
+
+            // SMGs
+            {"mac10", 1050}, {"mp9", 1250}, {"mp7", 1500}, {"mp5sd", 1500}, 
+            {"ump45", 1200}, {"p90", 2350}, {"bizon", 1400},
+
+            // Rifles
+            {"galilar", 1800}, {"famas", 2050}, {"ak47", 2700}, {"m4a1", 3100}, 
+            {"m4a1_silencer", 2900}, {"aug", 3300}, {"sg556", 3000}, {"ssg08", 1700}, 
+            {"awp", 4700}, {"g3sg1", 5000}, {"scar20", 5000},
+
+            // Heavy
+            {"nova", 1050}, {"xm1014", 2000}, {"mag7", 1300}, {"sawedoff", 1100}, 
+            {"m249", 5200}, {"negev", 1700}
         };
 
         public override void Load(bool hotReload)
@@ -32,7 +55,7 @@ namespace ZeusLockdown
             RegisterEventHandler<EventPlayerDeath>(OnPlayerDeath);
             RegisterEventHandler<EventPlayerSpawn>(OnPlayerSpawn);
             
-            // THE WEAPON RESTRICT METHOD: Listen for the actual purchase event instead of the command
+            // Listen for the actual purchase event
             RegisterEventHandler<EventItemPurchase>(OnItemPurchase);
 
             RegisterListener<Listeners.OnClientPutInServer>(OnPlayerJoin);
@@ -65,24 +88,27 @@ namespace ZeusLockdown
             var player = ev.Userid;
             if (player == null || !player.IsValid) return HookResult.Continue;
 
-            // The event gives us the exact weapon name (e.g., "weapon_ak47") and exactly what the engine charged
             string weaponPurchased = ev.Weapon;
-            int amountSpent = ev.Cost; 
 
             if (!IsItemAllowed(weaponPurchased))
             {
-                // 1. Refund the EXACT amount they spent (fixes the $0 spam glitch)
-                if (amountSpent > 0 && player.InGameMoneyServices != null)
+                string cleanName = weaponPurchased.ToLowerInvariant().Replace("weapon_", "").Replace("item_", "").Trim();
+                
+                // Lookup the price in our dictionary and refund them
+                if (WeaponPrices.TryGetValue(cleanName, out int refundAmount))
                 {
-                    player.InGameMoneyServices.Account += amountSpent;
-                    // Force the UI to update the player's wallet instantly
-                    Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInGameMoneyServices");
+                    if (player.InGameMoneyServices != null)
+                    {
+                        player.InGameMoneyServices.Account += refundAmount;
+                        // Force the UI to update the player's wallet instantly
+                        Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInGameMoneyServices");
+                    }
                 }
 
-                // 2. Warn the player
+                // Warn the player
                 player.PrintToChat(" \x02[Zeus Lockdown]\x01 That weapon is restricted! Purchase refunded.");
 
-                // 3. Strip the illegal weapon immediately on the next frame
+                // Strip the illegal weapon immediately on the next frame
                 Server.NextFrame(() => StripIllegalWeapons(player));
             }
 
