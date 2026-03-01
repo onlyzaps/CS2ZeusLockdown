@@ -129,11 +129,17 @@ namespace ZeusLockdown
                     {
                         if (entity != null && entity.IsValid)
                         {
-                            // Only remove it if it doesn't belong to a player (map drops)
-                            // Player removals are handled by StripIllegalWeapons
-                            if (entity.OwnerEntity == null || !entity.OwnerEntity.IsValid)
+                            // Cast the generic entity instance to a CBaseEntity to access OwnerEntity
+                            var baseEntity = entity as CBaseEntity;
+
+                            if (baseEntity != null)
                             {
-                                entity.Remove();
+                                // Only remove it if it doesn't belong to a player (map drops)
+                                // Player removals are handled by StripIllegalWeapons
+                                if (baseEntity.OwnerEntity == null || !baseEntity.OwnerEntity.IsValid)
+                                {
+                                    baseEntity.Remove();
+                                }
                             }
                         }
                     });
@@ -283,3 +289,4 @@ namespace ZeusLockdown
         }
     }
 }
+
