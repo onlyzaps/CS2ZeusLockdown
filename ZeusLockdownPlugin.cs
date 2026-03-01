@@ -14,7 +14,7 @@ namespace ZeusLockdown
     public class ZeusLockdownPlugin : BasePlugin
     {
         public override string ModuleName => "Zeus Lockdown";
-        public override string ModuleVersion => "1.0.9"; 
+        public override string ModuleVersion => "1.1.0"; 
         private CounterStrikeSharp.API.Modules.Timers.Timer? zeusReminderTimer;
 
         // Unified list for both the buy menu AND map drops
@@ -271,3 +271,4 @@ namespace ZeusLockdown
         }
     }
 }
+
