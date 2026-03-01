@@ -24,7 +24,9 @@ namespace ZeusLockdown
             "hegrenade", "grenade",
             "smokegrenade", "smoke",
             "molotov", "incgrenade", "firebomb",
-            "decoy", "decoygrenade", "c4"
+            "decoy", "decoygrenade", "c4",
+            "grenade0", "grenade1", "grenade2", "grenade3", "grenade4",
+            "kevlar", "assaultsuit", "defuser" 
         };
 
         public override void Load(bool hotReload)
@@ -245,4 +247,5 @@ namespace ZeusLockdown
             zeusReminderTimer = null;
         }
     }
+
 }
