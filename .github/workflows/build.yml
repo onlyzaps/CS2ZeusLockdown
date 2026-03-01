@@ -4,11 +4,10 @@ on:
   push:
     branches: [ "main", "master" ]
     paths-ignore:
-      - '.github/workflows/**' # Ignores any changes to workflow files
-      - 'README.md'            # Optional: Good idea to ignore readme edits too
+      - '.github/workflows/**'
+      - 'README.md'
   workflow_dispatch:
 
-# Grants the GITHUB_TOKEN permission to push commits and create releases
 permissions:
   contents: write
 
@@ -20,22 +19,17 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0 # Fetches all history so we can push back
+        fetch-depth: 0
 
     - name: Bump Version in CS File
       id: bump
       run: |
-        # Find the plugin file
         FILE=$(find . -name "ZeusLockdown*.cs" | head -n 1)
-        
-        # Extract the current version (e.g., "1.0" or "3.4")
         CURRENT_VERSION=$(grep -oP 'ModuleVersion\s*=>\s*"\K[0-9.]+' "$FILE")
         echo "Current Version: $CURRENT_VERSION"
         
-        # Split into an array by the decimal point
         IFS='.' read -r -a parts <<< "$CURRENT_VERSION"
         
-        # Increment logic (Handles 1.0 -> 1.0.1, or 1.0.1 -> 1.0.2)
         if [ ${#parts[@]} -eq 1 ]; then
             NEW_VERSION="${parts[0]}.0.1"
         elif [ ${#parts[@]} -eq 2 ]; then
@@ -46,11 +40,7 @@ jobs:
         fi
         
         echo "New Version: $NEW_VERSION"
-        
-        # Replace the old version string with the new one in the file
         sed -i "s/ModuleVersion\s*=>\s*\"$CURRENT_VERSION\"/ModuleVersion => \"$NEW_VERSION\"/" "$FILE"
-        
-        # Save the new version to the GitHub environment for later steps
         echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
     - name: Commit and Push Version Bump
@@ -58,7 +48,6 @@ jobs:
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add .
-        # [skip ci] prevents this commit from triggering the workflow again in an infinite loop
         git commit -m "chore: bump version to ${{ env.NEW_VERSION }} [skip ci]"
         git push
 
@@ -100,12 +89,25 @@ jobs:
     - name: Build Plugin
       run: dotnet publish ZeusLockdown.csproj -c Release -o ./publish
 
+    - name: Package Plugin into Zip
+      run: |
+        # Create the required folder structure
+        mkdir -p package/counterstrikesharp/plugins/ZeusLockdown/
+        
+        # Move the compiled dll into the structure
+        cp ./publish/ZeusLockdown.dll package/counterstrikesharp/plugins/ZeusLockdown/
+        
+        # Navigate in, zip the folder, and move the zip back to the root workspace
+        cd package
+        zip -r ../ZeusLockdown-${{ env.NEW_VERSION }}.zip counterstrikesharp/
+        cd ..
+
     - name: Create GitHub Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Use the GitHub CLI to create a release, tag it, and upload the .dll
-        gh release create "v${{ env.NEW_VERSION }}" ./publish/ZeusLockdown.dll \
+        # Upload the zip file instead of the raw dll
+        gh release create "v${{ env.NEW_VERSION }}" ZeusLockdown-${{ env.NEW_VERSION }}.zip \
           --title "Zeus Lockdown v${{ env.NEW_VERSION }}" \
           --notes "Automated release of Zeus Lockdown version ${{ env.NEW_VERSION }}." \
           --latest
